@@ -132,6 +132,13 @@ void VideoProcessorFromDecklinkDevice::addDevice( std::shared_ptr<decklink::Deck
 
 HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoFrame)
 {
+	static double frec = cv::getTickFrequency()/1000;
+	static long long antTick;
+
+	mLastFrameTick = cv::getTickCount();
+	//cout << ((mLastFrameTick - antTick)/frec) << endl; 
+	antTick = mLastFrameTick;
+
     // Handle Video Frame
     if(videoFrame && !isStopped())
     {
@@ -144,6 +151,7 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
 	
 			convertFrameToOpenCV( videoFrame, mFrame );
 
+			
 			if (!mFrame.empty() && !m_gpufield1 && !m_gpufield2) {
 				m_gpuframe = new cv::gpu::GpuMat(mFrame);
 				m_gpufield1 = new cv::gpu::GpuMat(mFrame);
@@ -153,6 +161,7 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
 				m_gpuframe->upload(mFrame);
 			}
 
+			
 			if (m_gpuframe && m_gpufield1 && m_gpufield2)
 			{
 				CUDARoutines::VideoFilters::deinterlaceInterpol( videoFrame->GetWidth(), 
@@ -175,20 +184,28 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
 
 bool  VideoProcessorFromDecklinkDevice::readNextFrame( cv::Mat &frame )
 {
-	if (mField1.empty() || mField2.empty())
+	static double frec = cv::getTickFrequency()/1000;
+	static long long antTick;
+
+	long long timeAct = cv::getTickCount();
+	cout << ((timeAct - antTick)/frec) << endl; 
+	antTick = timeAct;
+
+	if (mFrame.empty())
 		return false;
 	
-	static 	double frec = cv::getTickFrequency() / 1000.0;  // Frecuencia en milisegundos
-	long long timeAct = cv::getTickCount();
-	
+	if (mField1.empty() || mField2.empty())
+		return false;
+		
 	lock_guard<mutex> g( mtxFrameBytes);
-	if ( ((long)(timeAct/frec) % delay) < delay/2 )
+	if ((long)((timeAct-mLastFrameTick)/frec) < delay/2 )
 	{
 		mField1.copyTo(frame);
 	}
 	else {
 		mField2.copyTo(frame);
 	}
+	
 	return true;
 }
 
