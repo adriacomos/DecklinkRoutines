@@ -47,6 +47,8 @@ DeckLinkDevice::~DeckLinkDevice()
 {
 	if (m_deckLinkInput != NULL)
 	{
+		m_deckLinkInput->DisableVideoInput();
+		m_deckLinkInput->StopStreams();
 		m_deckLinkInput->Release();
 		m_deckLinkInput = NULL;
 	}
@@ -193,6 +195,9 @@ bool		DeckLinkDevice::Init()
 		m_deviceName = "DeckLink";
 	}
 
+	vector<string> modeNames;
+	GetDisplayModeNames( modeNames );
+
 	return true;
 }
 
@@ -208,6 +213,13 @@ void		DeckLinkDevice::GetDisplayModeNames(vector<std::string>& modeNames)
 			std::string modeName;
 			BstrToStdString( modeNameBstr, modeName );
 			modeNames.push_back(modeName);
+
+			BMDTimeValue fd;
+			BMDTimeScale ts;
+			m_modeList[modeIndex]->GetFrameRate( &fd, &ts );
+			
+			cout << "[" << modeIndex << "] " << modeName << " FrameDuration: " << fd << " TimeScale: " << ts << endl;  
+
 			SysFreeString(modeNameBstr);
 		}
 		else 
@@ -295,6 +307,8 @@ HRESULT		DeckLinkDevice::VideoInputFormatChanged (/* in */ BMDVideoInputFormatCh
 		//PostMessage(m_uiDelegate->GetSafeHwnd(), WM_ERROR_RESTARTING_CAPTURE_MESSAGE, 0, 0);
 		goto bail;
 	}
+
+	
 
 	// Start the capture
 	if (m_deckLinkInput->StartStreams() != S_OK)

@@ -39,18 +39,26 @@ class VideoProcessorFromDecklinkDevice :	public VideoProcessor,
 
 	std::mutex mtxFrameBytes;
 	cv::Mat mFrame;	// Protegido por mtxFrameBytes
+	cv::Mat mField1;	// Protegido por mtxFrameBytes
+	cv::Mat mField2;	// Protegido por mtxFrameBytes
 
 	int mHeight, mWidth;
 
-	bool convertFrameToOpenCV(IDeckLinkVideoFrame* in);
+	bool convertFrameToOpenCV(IDeckLinkVideoFrame* in, cv::Mat &frame);
 
-    
+
+	void waitForNextFrame( long elapsedTime, long frec, int &keyPressed ) override;
+
+	cv::gpu::GpuMat *m_gpuframe;
+	cv::gpu::GpuMat *m_gpufield1;
+	cv::gpu::GpuMat *m_gpufield2;
+
 public:
 	VideoProcessorFromDecklinkDevice(double frameRate );
 	virtual ~VideoProcessorFromDecklinkDevice(void);
 
-
-	bool setInput() override;
+	//NOTA: el tamaño del frame debe coincidir con el vídeo de entrada
+	bool setInput(int frameWidth, int frameHeight);
 
 	void addDevice( std::shared_ptr<decklink::DeckLinkDevice> ptr  ) override;
 
@@ -67,6 +75,9 @@ public:
 	bool isOpened() override {return true;}
 
 	double getFrameRate() override;
+	void stopIt() override;
+	cv::Size  getFrameSize() const override;
+
 
 
 };

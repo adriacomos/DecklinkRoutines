@@ -6,6 +6,10 @@
 #include "opencv2\core\core.hpp"
 #include "opencv2\imgproc\imgproc.hpp"
 
+#include "opencv2\gpu\gpu.hpp"
+
+#include "..\CUDARoutines\kernels.h"
+
 
 using namespace cvf::decklink;
 using namespace std;
@@ -13,25 +17,42 @@ using namespace std;
 namespace cvf {
 
 VideoProcessorFromDecklinkDevice::VideoProcessorFromDecklinkDevice(double frameRate)
-	:mFrameRate(frameRate)
+	:mFrameRate(frameRate), m_deckLinkDiscovery(nullptr)
+	,m_gpuframe( nullptr), m_gpufield1( nullptr), m_gpufield2( nullptr)
 {
 	CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
-	// de momento, a saco
-	mHeight = 1080;
-	mWidth = 1920;
+	mHeight = 0;
+	mWidth = 0;
+
 	
-
-	cv::Mat mat = cv::Mat(mHeight, mWidth, CV_8UC3 );
-       
-
 
 }
 
 
 VideoProcessorFromDecklinkDevice::~VideoProcessorFromDecklinkDevice(void)
 {
+	//stopIt();
+	if (m_deckLinkDiscovery)
+		delete m_deckLinkDiscovery;
+
+	mLstDevices.clear();
 	CoUninitialize();
+
+	if (m_gpuframe)
+		delete m_gpuframe;
+	
+	if (m_gpufield1)
+		delete m_gpufield1;
+	
+	if (m_gpufield2)
+		delete m_gpufield2;
+
+
+	m_gpuframe = nullptr;
+	m_gpufield1 = nullptr;
+	m_gpufield2 = nullptr;
+
 }
 
 double VideoProcessorFromDecklinkDevice::getFrameRate() {
@@ -39,9 +60,31 @@ double VideoProcessorFromDecklinkDevice::getFrameRate() {
 }
 
 
-
-bool VideoProcessorFromDecklinkDevice::setInput()
+void VideoProcessorFromDecklinkDevice::stopIt() 
 {
+	VideoProcessor::stopIt();
+
+	lock_guard<mutex> g(mtxDevices);
+	if (!mLstDevices.empty())
+	{
+		auto device = mLstDevices[0];
+		device->StopCapture();
+	}
+}
+
+cv::Size  VideoProcessorFromDecklinkDevice::getFrameSize() const 
+{
+	if (hasWorkingSize())
+		return getWorkingSize();
+
+	return cv::Size( mWidth,mHeight );
+}
+
+bool VideoProcessorFromDecklinkDevice::setInput( int frameWidth, int frameHeight)
+{
+	mHeight = frameHeight;
+	mWidth = frameWidth;
+
 	m_deckLinkDiscovery = new DeckLinkDeviceDiscovery( shared_from_this() );
 		
 	if (! m_deckLinkDiscovery->Enable()) {
@@ -82,16 +125,15 @@ void VideoProcessorFromDecklinkDevice::addDevice( std::shared_ptr<decklink::Deck
 	mLstDevices.push_back( newDevice );
 
 	std::string name = newDevice->GetDeviceName();
-
+	cout << "Decklink device detected: " << name << endl;
 
 }
 
 
 HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoFrame)
 {
-
     // Handle Video Frame
-    if(videoFrame)// && !stopped)
+    if(videoFrame && !isStopped())
     {
         if (videoFrame->GetFlags() & bmdFrameHasNoInputSource)
         {
@@ -99,25 +141,60 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
         }
         else
         {
-            convertFrameToOpenCV( videoFrame );
+	
+			convertFrameToOpenCV( videoFrame, mFrame );
+
+			if (!mFrame.empty() && !m_gpufield1 && !m_gpufield2) {
+				m_gpuframe = new cv::gpu::GpuMat(mFrame);
+				m_gpufield1 = new cv::gpu::GpuMat(mFrame);
+				m_gpufield2 = new cv::gpu::GpuMat(mFrame);
+			}
+			else {
+				m_gpuframe->upload(mFrame);
+			}
+
+			if (m_gpuframe && m_gpufield1 && m_gpufield2)
+			{
+				CUDARoutines::VideoFilters::deinterlaceInterpol( videoFrame->GetWidth(), 
+															  videoFrame->GetHeight(),
+															  m_gpuframe->data,
+															  m_gpufield1->data,
+															  m_gpufield2->data,
+															  m_gpuframe->step);
+
+				lock_guard<mutex> g( mtxFrameBytes);
+				m_gpufield1->download(mField1);
+				m_gpufield2->download(mField2);
+			}
         }
-
     }
-
 	return S_OK;
 }
 
 
+
 bool  VideoProcessorFromDecklinkDevice::readNextFrame( cv::Mat &frame )
 {
-	if (!mFrame.empty()) {
-		frame = mFrame;
-		return true;
+	if (mField1.empty() || mField2.empty())
+		return false;
+	
+	static 	double frec = cv::getTickFrequency() / 1000.0;  // Frecuencia en milisegundos
+	long long timeAct = cv::getTickCount();
+	
+	lock_guard<mutex> g( mtxFrameBytes);
+	if ( ((long)(timeAct/frec) % delay) < delay/2 )
+	{
+		mField1.copyTo(frame);
 	}
-    return false;
+	else {
+		mField2.copyTo(frame);
+	}
+	return true;
 }
 
-bool VideoProcessorFromDecklinkDevice::convertFrameToOpenCV(IDeckLinkVideoFrame* in)
+
+
+bool VideoProcessorFromDecklinkDevice::convertFrameToOpenCV(IDeckLinkVideoFrame* in, cv::Mat &frame)
 {
 	switch (in->GetPixelFormat()) {
     case bmdFormat8BitYUV:
@@ -125,11 +202,12 @@ bool VideoProcessorFromDecklinkDevice::convertFrameToOpenCV(IDeckLinkVideoFrame*
         void* data;
         if (FAILED(in->GetBytes(&data)))
             return false;
+
         cv::Mat mat = cv::Mat(in->GetHeight(), in->GetWidth(), CV_8UC2, data,
             in->GetRowBytes());
 
 		lock_guard<mutex> g( mtxFrameBytes);
-        cv::cvtColor(mat, mFrame, CV_YUV2BGR_UYVY);
+        cv::cvtColor(mat, frame, CV_YUV2BGR_UYVY);
         return true;
     }
     case bmdFormat8BitBGRA:
@@ -137,10 +215,10 @@ bool VideoProcessorFromDecklinkDevice::convertFrameToOpenCV(IDeckLinkVideoFrame*
         void* data;
         if (FAILED(in->GetBytes(&data)))
             return false;
-        cv::Mat mat = cv::Mat(in->GetHeight(), in->GetWidth(), CV_8UC4, data);
-        
-		lock_guard<mutex> g( mtxFrameBytes);
-		cv::cvtColor(mat, mFrame, CV_BGRA2BGR);
+
+		cv::Mat mat = cv::Mat(in->GetHeight(), in->GetWidth(), CV_8UC4, data);
+
+		cv::cvtColor(mat, frame, CV_BGRA2BGR);
         return true;
     }
     default:
@@ -162,5 +240,30 @@ bool VideoProcessorFromDecklinkDevice::convertFrameToOpenCV(IDeckLinkVideoFrame*
     }}
 }
 
+
+
+// ------------------------------------------------------------------------------------------------------------- 
+// NOTA: La diferencia principal con la implementación por defecto en VideoProcessor es que el delay que se
+// espera entre frame y frame es la mitad, doblando el frame rate efectivo.
+// Esto se ha hecho así porque, al menos en los videos entrelazados, se ha de leer field a field, y no frame
+// a frame (es decir, al doble de frecuencia, y por tanto, en la mitad de tiempo -delay-).
+void VideoProcessorFromDecklinkDevice::waitForNextFrame( long elapsedTime, long frec, int &keyPressed )
+{
+	bool paused = getPause();
+
+
+	if (!paused)
+	{
+		long timeToWait = std::max(2L,(delay/2)-elapsedTime);
+		keyPressed = cv::waitKey( timeToWait );
+	}
+	if (paused)
+	{
+		while ( paused && ( keyPressed = cv::waitKey(1)) == -1)
+		{
+			paused = getPause();
+		}
+	}
+}
 
 }
