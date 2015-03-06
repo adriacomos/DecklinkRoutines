@@ -132,13 +132,14 @@ void VideoProcessorFromDecklinkDevice::addDevice( std::shared_ptr<decklink::Deck
 
 HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoFrame)
 {
-	static double frec = cv::getTickFrequency()/1000;
-	static long long antTick;
+	//static double frec = cv::getTickFrequency()/1000;
+	//static long long antTick;
+
+	//cout << ((mLastFrameTick - antTick)/frec) << endl; 
+	//antTick = mLastFrameTick;
 
 	mLastFrameTick = cv::getTickCount();
-	//cout << ((mLastFrameTick - antTick)/frec) << endl; 
-	antTick = mLastFrameTick;
-
+	
     // Handle Video Frame
     if(videoFrame && !isStopped())
     {
@@ -148,14 +149,13 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
         }
         else
         {
-	
 			convertFrameToOpenCV( videoFrame, mFrame );
 
 			
 			if (!mFrame.empty() && !m_gpufield1 && !m_gpufield2) {
 				m_gpuframe = new cv::gpu::GpuMat(mFrame);
 				m_gpufield1 = new cv::gpu::GpuMat(mFrame);
-				m_gpufield2 = new cv::gpu::GpuMat(mFrame);
+				m_gpufield2 = new cv::gpu::GpuMat(mFrame);\\
 			}
 			else {
 				m_gpuframe->upload(mFrame);
@@ -185,16 +185,20 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
 bool  VideoProcessorFromDecklinkDevice::readNextFrame( cv::Mat &frame )
 {
 	static double frec = cv::getTickFrequency()/1000;
-	static long long antTick;
+	//static long long antTick;
+
+	// Bucle que espera un nuevo frame
+	while (mLastAcceptedFrameTick == mLastFrameTick );
+
+	mLastAcceptedFrameTick = mLastFrameTick;
+
 
 	long long timeAct = cv::getTickCount();
-	cout << ((timeAct - antTick)/frec) << endl; 
-	antTick = timeAct;
+	//cout << ((timeAct - antTick)/frec) << endl; 
+	//antTick = timeAct;
 
-	if (mFrame.empty())
-		return false;
 	
-	if (mField1.empty() || mField2.empty())
+	if (mFrame.empty() || mField1.empty() || mField2.empty())
 		return false;
 		
 	lock_guard<mutex> g( mtxFrameBytes);

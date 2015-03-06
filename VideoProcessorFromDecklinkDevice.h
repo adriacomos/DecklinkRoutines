@@ -45,6 +45,7 @@ class VideoProcessorFromDecklinkDevice :	public VideoProcessor,
 	int mHeight, mWidth;
 
 	long long mLastFrameTick;
+	long long mLastAcceptedFrameTick;
 
 	bool convertFrameToOpenCV(IDeckLinkVideoFrame* in, cv::Mat &frame);
 
