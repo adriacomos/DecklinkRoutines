@@ -16,9 +16,12 @@ using namespace std;
 
 namespace cvf {
 
+// TODO: VIdeoProcessorFromDecklinkDevice trabaja desentrelazando; dar la posibilidad de desactivarlo.
+
 VideoProcessorFromDecklinkDevice::VideoProcessorFromDecklinkDevice(double frameRate)
 	:mFrameRate(frameRate), m_deckLinkDiscovery(nullptr)
 	,m_gpuframe( nullptr), m_gpufield1( nullptr), m_gpufield2( nullptr)
+	,mLastAcceptedFrameTick(0)
 {
 	CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
@@ -132,20 +135,14 @@ void VideoProcessorFromDecklinkDevice::addDevice( std::shared_ptr<decklink::Deck
 
 HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoFrame)
 {
-	//static double frec = cv::getTickFrequency()/1000;
-	//static long long antTick;
-
-	//cout << ((mLastFrameTick - antTick)/frec) << endl; 
-	//antTick = mLastFrameTick;
-
-	mLastFrameTick = cv::getTickCount();
-	
     // Handle Video Frame
     if(videoFrame && !isStopped())
     {
         if (videoFrame->GetFlags() & bmdFrameHasNoInputSource)
         {
+
 			fprintf(stderr, "Frame received - No input signal detected\n");
+
         }
         else
         {
@@ -155,7 +152,7 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
 			if (!mFrame.empty() && !m_gpufield1 && !m_gpufield2) {
 				m_gpuframe = new cv::gpu::GpuMat(mFrame);
 				m_gpufield1 = new cv::gpu::GpuMat(mFrame);
-				m_gpufield2 = new cv::gpu::GpuMat(mFrame);\\
+				m_gpufield2 = new cv::gpu::GpuMat(mFrame);
 			}
 			else {
 				m_gpuframe->upload(mFrame);
@@ -176,7 +173,12 @@ HRESULT		VideoProcessorFromDecklinkDevice::DrawFrame(IDeckLinkVideoFrame* videoF
 				m_gpufield2->download(mField2);
 			}
         }
-    }
+	}
+
+	mtxFrameCount.lock();
+	mLastFrameTick = cv::getTickCount();
+	mtxFrameCount.unlock();
+
 	return S_OK;
 }
 
@@ -187,10 +189,22 @@ bool  VideoProcessorFromDecklinkDevice::readNextFrame( cv::Mat &frame )
 	static double frec = cv::getTickFrequency()/1000;
 	//static long long antTick;
 
-	// Bucle que espera un nuevo frame
-	while (mLastAcceptedFrameTick == mLastFrameTick );
 
+	// Bucle que espera un nuevo frame
+	mtxFrameCount.lock();
+	long long last = mLastFrameTick;
+	mtxFrameCount.unlock();
+
+	while (mLastAcceptedFrameTick == last && !isStopped())
+	{
+		mtxFrameCount.lock();
+		last = mLastFrameTick;
+		mtxFrameCount.unlock();
+	}
+
+	mtxFrameCount.lock();
 	mLastAcceptedFrameTick = mLastFrameTick;
+	mtxFrameCount.unlock();
 
 
 	long long timeAct = cv::getTickCount();
@@ -207,14 +221,15 @@ bool  VideoProcessorFromDecklinkDevice::readNextFrame( cv::Mat &frame )
 		mField1.copyTo(frame);
 	}
 	else {
-		mField2.copyTo(frame);
+		mField1.copyTo(frame);
 	}
-	
+
+
 	return true;
 }
 
 
-
+   
 bool VideoProcessorFromDecklinkDevice::convertFrameToOpenCV(IDeckLinkVideoFrame* in, cv::Mat &frame)
 {
 	switch (in->GetPixelFormat()) {
@@ -275,7 +290,7 @@ void VideoProcessorFromDecklinkDevice::waitForNextFrame( long elapsedTime, long 
 
 	if (!paused)
 	{
-		long timeToWait = std::max(2L,(delay/2)-elapsedTime);
+		long timeToWait = std::max(2L,10-elapsedTime);
 		keyPressed = cv::waitKey( timeToWait );
 	}
 	if (paused)
