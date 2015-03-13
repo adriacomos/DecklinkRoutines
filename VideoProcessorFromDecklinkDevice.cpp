@@ -291,7 +291,6 @@ void VideoProcessorFromDecklinkDevice::waitForNextFrame( long elapsedTime, long 
 	if (!paused)
 	{
 		long timeToWait = std::max(2L,20-elapsedTime);
-		cout << timeToWait << " ";
 		keyPressed = cv::waitKey( timeToWait );
 	}
 	if (paused)
